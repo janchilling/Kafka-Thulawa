@@ -28,6 +28,7 @@ import kafka.server.metadata._
 import kafka.server.share.SharePartitionManager
 import kafka.utils.CoreUtils
 import org.apache.kafka.common.config.ConfigException
+import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.scram.internals.ScramMechanism
