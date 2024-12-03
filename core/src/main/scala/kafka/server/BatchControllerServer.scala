@@ -21,7 +21,9 @@ import kafka.migration.MigrationPropagator
 import kafka.network.{DataPlaneAcceptor, SocketServer}
 import kafka.raft.KafkaRaftManager
 import kafka.server.QuotaFactory.QuotaManagers
-import kafka.server.metadata._
+
+import scala.collection.immutable
+import kafka.server.metadata.{AclPublisher, ClientQuotaMetadataManager, DelegationTokenPublisher, DynamicClientQuotaPublisher, DynamicConfigPublisher, KRaftMetadataCache, KRaftMetadataCachePublisher, ScramPublisher}
 import kafka.utils.{CoreUtils, Logging}
 import kafka.zk.{KafkaZkClient, ZkMigrationClient}
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
@@ -33,37 +35,36 @@ import org.apache.kafka.common.{ClusterResource, Endpoint, Uuid}
 import org.apache.kafka.controller.metrics.{ControllerMetadataMetricsPublisher, QuorumControllerMetrics}
 import org.apache.kafka.controller.{Controller, QuorumController, QuorumFeatures}
 import org.apache.kafka.image.publisher.{ControllerRegistrationsPublisher, MetadataPublisher}
+import org.apache.kafka.metadata.{KafkaConfigSchema, ListenerInfo}
 import org.apache.kafka.metadata.authorizer.ClusterMetadataAuthorizer
 import org.apache.kafka.metadata.bootstrap.BootstrapMetadata
 import org.apache.kafka.metadata.migration.{KRaftMigrationDriver, LegacyPropagator}
 import org.apache.kafka.metadata.publisher.FeaturesPublisher
-import org.apache.kafka.metadata.{KafkaConfigSchema, ListenerInfo}
 import org.apache.kafka.raft.QuorumConfig
 import org.apache.kafka.security.{CredentialProvider, PasswordEncoder}
 import org.apache.kafka.server.NodeToControllerChannelManager
 import org.apache.kafka.server.authorizer.Authorizer
+import org.apache.kafka.server.config.ServerLogConfigs.{ALTER_CONFIG_POLICY_CLASS_NAME_CONFIG, CREATE_TOPIC_POLICY_CLASS_NAME_CONFIG}
 import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.config.ConfigType
-import org.apache.kafka.server.config.ServerLogConfigs.{ALTER_CONFIG_POLICY_CLASS_NAME_CONFIG, CREATE_TOPIC_POLICY_CLASS_NAME_CONFIG}
 import org.apache.kafka.server.metrics.{KafkaMetricsGroup, KafkaYammerMetrics, LinuxIoMetricsCollector}
 import org.apache.kafka.server.network.{EndpointReadyFutures, KafkaAuthorizerServerInfo}
 import org.apache.kafka.server.policy.{AlterConfigPolicy, CreateTopicPolicy}
 import org.apache.kafka.server.util.{Deadline, FutureUtils}
 
 import java.util
+import java.util.{Optional, OptionalLong}
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.{CompletableFuture, TimeUnit}
-import java.util.{Optional, OptionalLong}
-import scala.collection.immutable
 import scala.compat.java8.OptionConverters._
 import scala.jdk.CollectionConverters._
 
 
 //case class ControllerMigrationSupport(
-//                                       zkClient: KafkaZkClient,
-//                                       migrationDriver: KRaftMigrationDriver,
-//                                       brokersRpcClient: LegacyPropagator
-//                                     ) {
+//  zkClient: KafkaZkClient,
+//  migrationDriver: KRaftMigrationDriver,
+//  brokersRpcClient: LegacyPropagator
+//) {
 //  def shutdown(logging: Logging): Unit = {
 //    if (zkClient != null) {
 //      CoreUtils.swallow(zkClient.close(), logging)
@@ -78,13 +79,13 @@ import scala.jdk.CollectionConverters._
 //}
 
 /**
- * A Kafka controller that runs in KRaft (Kafka Raft) mode.
+ * A Kafka Batch controller that runs in KRaft (Kafka Raft) mode for Thulawa.
  */
-class BatchControllerServer(
-                        val sharedServer: SharedServer,
-                        val configSchema: KafkaConfigSchema,
-                        val bootstrapMetadata: BootstrapMetadata
-                      ) extends Logging {
+class ControllerServer(
+  val sharedServer: SharedServer,
+  val configSchema: KafkaConfigSchema,
+  val bootstrapMetadata: BootstrapMetadata
+) extends Logging {
 
   import kafka.server.Server._
 
@@ -373,7 +374,7 @@ class BatchControllerServer(
       // It must be called before DynamicClientQuotaPublisher is installed, since otherwise we may
       // miss the initial update which establishes the dynamic configurations that are in effect on
       // startup.
-//      config.dynamicConfig.addReconfigurables(this)
+      config.dynamicConfig.addReconfigurables(this)
 
       // Set up the client quotas publisher. This will enable controller mutation quotas and any
       // other quotas which are applicable.
@@ -395,10 +396,10 @@ class BatchControllerServer(
       // We need a tokenManager for the Publisher
       // The tokenCache in the tokenManager is the same used in DelegationTokenControlManager
       metadataPublishers.add(new DelegationTokenPublisher(
-        config,
-        sharedServer.metadataPublishingFaultHandler,
-        "controller",
-        new DelegationTokenManager(config, tokenCache, time)
+          config,
+          sharedServer.metadataPublishingFaultHandler,
+          "controller",
+          new DelegationTokenManager(config, tokenCache, time)
       ))
 
       // Set up the metrics publisher.
@@ -541,170 +542,4 @@ class BatchControllerServer(
       lock.unlock()
     }
   }
-}will enable controller mutation quotas and any
-                            // other quotas which are applicable.
-                            metadataPublishers.add(new DynamicClientQuotaPublisher(
-                              config,
-                              sharedServer.metadataPublishingFaultHandler,
-                              "controller",
-                              clientQuotaMetadataManager))
-
-                            // Set up the SCRAM publisher.
-                            metadataPublishers.add(new ScramPublisher(
-                              config,
-                              sharedServer.metadataPublishingFaultHandler,
-                              "controller",
-                              credentialProvider
-                            ))
-
-                            // Set up the DelegationToken publisher.
-                            // We need a tokenManager for the Publisher
-                            // The tokenCache in the tokenManager is the same used in DelegationTokenControlManager
-                            metadataPublishers.add(new DelegationTokenPublisher(
-                              config,
-                              sharedServer.metadataPublishingFaultHandler,
-                              "controller",
-                              new DelegationTokenManager(config, tokenCache, time)
-                            ))
-
-                            // Set up the metrics publisher.
-                            metadataPublishers.add(new ControllerMetadataMetricsPublisher(
-                              sharedServer.controllerServerMetrics,
-                              sharedServer.metadataPublishingFaultHandler
-                            ))
-
-                            // Set up the ACL publisher.
-                            metadataPublishers.add(new AclPublisher(
-                              config.nodeId,
-                              sharedServer.metadataPublishingFaultHandler,
-                              "controller",
-                              authorizer
-                            ))
-
-                            // Install all metadata publishers.
-                            FutureUtils.waitWithLogging(logger.underlying, logIdent,
-                              "the controller metadata publishers to be installed",
-                              sharedServer.loader.installPublishers(metadataPublishers), startupDeadline, time)
-
-                            val authorizerFutures: Map[Endpoint, CompletableFuture[Void]] = endpointReadyFutures.futures().asScala.toMap
-
-                            /**
-                             * Enable the controller endpoint(s). If we are using an authorizer which stores
-                             * ACLs in the metadata log, such as StandardAuthorizer, we will be able to start
-                             * accepting requests from principals included super.users right after this point,
-                             * but we will not be able to process requests from non-superusers until AclPublisher
-                             * publishes metadata from the QuorumController. MetadataPublishers do not publish
-                             * metadata until the controller has caught up to the high watermark.
-                             */
-                            val socketServerFuture = socketServer.enableRequestProcessing(authorizerFutures)
-
-                            /**
-                             * Start the KIP-919 controller registration manager.
-                             */
-                            val controllerNodeProvider = RaftControllerNodeProvider(raftManager, config)
-                            registrationChannelManager = new NodeToControllerChannelManagerImpl(
-                              controllerNodeProvider,
-                              time,
-                              metrics,
-                              config,
-                              "registration",
-                              s"controller-${config.nodeId}-",
-                              5000)
-                            registrationChannelManager.start()
-                            registrationManager.start(registrationChannelManager)
-
-                            // Block here until all the authorizer futures are complete
-                            FutureUtils.waitWithLogging(logger.underlying, logIdent,
-                              "all of the authorizer futures to be completed",
-                              CompletableFuture.allOf(authorizerFutures.values.toSeq: _*), startupDeadline, time)
-
-                            // Wait for all the SocketServer ports to be open, and the Acceptors to be started.
-                            FutureUtils.waitWithLogging(logger.underlying, logIdent,
-                              "all of the SocketServer Acceptors to be started",
-                              socketServerFuture, startupDeadline, time)
-                          } catch {
-                            case e: Throwable =>
-                              maybeChangeStatus(STARTING, STARTED)
-                              sharedServer.controllerStartupFaultHandler.handleFault("caught exception", e)
-                              shutdown()
-                              throw e
-                          }
-                        }
-
-                        def shutdown(): Unit = {
-                          if (!maybeChangeStatus(STARTED, SHUTTING_DOWN)) return
-                          try {
-                            info("shutting down")
-                            // Ensure that we're not the Raft leader prior to shutting down our socket server, for a
-                            // smoother transition.
-                            sharedServer.ensureNotRaftLeader()
-                            incarnationId = null
-                            if (registrationManager != null) {
-                              CoreUtils.swallow(registrationManager.close(), this)
-                              registrationManager = null
-                            }
-                            if (registrationChannelManager != null) {
-                              CoreUtils.swallow(registrationChannelManager.shutdown(), this)
-                              registrationChannelManager = null
-                            }
-                            metadataPublishers.forEach(p => sharedServer.loader.removeAndClosePublisher(p).get())
-                            metadataPublishers.clear()
-                            if (metadataCache != null) {
-                              metadataCache = null
-                            }
-                            if (metadataCachePublisher != null) {
-                              metadataCachePublisher.close()
-                              metadataCachePublisher = null
-                            }
-                            if (featuresPublisher != null) {
-                              featuresPublisher.close()
-                              featuresPublisher = null
-                            }
-                            if (registrationsPublisher != null) {
-                              registrationsPublisher.close()
-                              registrationsPublisher = null
-                            }
-                            if (socketServer != null)
-                              CoreUtils.swallow(socketServer.stopProcessingRequests(), this)
-                            migrationSupport.foreach(_.shutdown(this))
-                            if (controller != null)
-                              controller.beginShutdown()
-                            if (socketServer != null)
-                              CoreUtils.swallow(socketServer.shutdown(), this)
-                            if (controllerApisHandlerPool != null)
-                              CoreUtils.swallow(controllerApisHandlerPool.shutdown(), this)
-                            if (controllerApis != null)
-                              CoreUtils.swallow(controllerApis.close(), this)
-                            if (quotaManagers != null)
-                              CoreUtils.swallow(quotaManagers.shutdown(), this)
-                            if (controller != null)
-                              controller.close()
-                            if (quorumControllerMetrics != null)
-                              CoreUtils.swallow(quorumControllerMetrics.close(), this)
-                            CoreUtils.swallow(authorizer.foreach(_.close()), this)
-                            createTopicPolicy.foreach(policy => CoreUtils.swallow(policy.close(), this))
-                            alterConfigPolicy.foreach(policy => CoreUtils.swallow(policy.close(), this))
-                            socketServerFirstBoundPortFuture.completeExceptionally(new RuntimeException("shutting down"))
-                            CoreUtils.swallow(config.dynamicConfig.clear(), this)
-                            sharedServer.stopForController()
-                          } catch {
-                            case e: Throwable =>
-                              fatal("Fatal error during controller shutdown.", e)
-                              throw e
-                          } finally {
-                            maybeChangeStatus(SHUTTING_DOWN, SHUTDOWN)
-                          }
-                        }
-
-                        def awaitShutdown(): Unit = {
-                          lock.lock()
-                          try {
-                            while (true) {
-                              if (status == SHUTDOWN) return
-                              awaitShutdownCond.awaitUninterruptibly()
-                            }
-                          } finally {
-                            lock.unlock()
-                          }
-                        }
-                      }
+}
