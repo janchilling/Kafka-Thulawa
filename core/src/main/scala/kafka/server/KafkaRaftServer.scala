@@ -75,14 +75,34 @@ class KafkaRaftServer(
     new StandardFaultHandlerFactory(),
   )
 
-  private val broker: Option[BrokerServer] = if (config.processRoles.contains(ProcessRole.BrokerRole)) {
+  private val broker: Option[BrokerServer] = if (config.processRoles.contains(ProcessRole.BrokerRole) &&
+    !config.processRoles.contains(ProcessRole.BatchBrokerRole)) {
     Some(new BrokerServer(sharedServer))
   } else {
     None
   }
 
-  private val controller: Option[ControllerServer] = if (config.processRoles.contains(ProcessRole.ControllerRole)) {
+  private val controller: Option[ControllerServer] = if (config.processRoles.contains(ProcessRole.ControllerRole) &&
+    !config.processRoles.contains(ProcessRole.BatchControllerRole)) {
     Some(new ControllerServer(
+      sharedServer,
+      KafkaRaftServer.configSchema,
+      bootstrapMetadata,
+    ))
+  } else {
+    None
+  }
+
+  private val batchBroker: Option[BatchBrokerServer] = if (!config.processRoles.contains(ProcessRole.BrokerRole) &&
+    config.processRoles.contains(ProcessRole.BatchBrokerRole)) {
+    Some(new BatchBrokerServer(sharedServer))
+  } else {
+    None
+  }
+
+  private val batchController: Option[BatchControllerServer] = if (!config.processRoles.contains(ProcessRole.ControllerRole) &&
+    config.processRoles.contains(ProcessRole.BatchControllerRole)) {
+    Some(new BatchControllerServer(
       sharedServer,
       KafkaRaftServer.configSchema,
       bootstrapMetadata,
@@ -95,8 +115,18 @@ class KafkaRaftServer(
     Mx4jLoader.maybeLoad()
     // Controller component must be started before the broker component so that
     // the controller endpoints are passed to the KRaft manager
-    controller.foreach(_.startup())
-    broker.foreach(_.startup())
+    if (config.processRoles.contains(ProcessRole.BatchBrokerRole) &&
+      config.processRoles.contains(ProcessRole.BatchControllerRole)){
+      batchController.foreach(_.startup())
+      batchBroker.foreach(_.startup())
+    }
+
+    if (config.processRoles.contains(ProcessRole.BrokerRole) &&
+      config.processRoles.contains(ProcessRole.ControllerRole)){
+      controller.foreach(_.startup())
+      broker.foreach(_.startup())
+    }
+
     AppInfoParser.registerAppInfo(Server.MetricsPrefix, config.brokerId.toString, metrics, time.milliseconds())
     info(KafkaBroker.STARTED_MESSAGE)
   }
@@ -107,12 +137,16 @@ class KafkaRaftServer(
     // stops the raft client early on, which would disrupt broker shutdown.
     broker.foreach(_.shutdown())
     controller.foreach(_.shutdown())
+    batchBroker.foreach(_.shutdown())
+    batchController.foreach(_.shutdown())
     CoreUtils.swallow(AppInfoParser.unregisterAppInfo(Server.MetricsPrefix, config.brokerId.toString, metrics), this)
   }
 
   override def awaitShutdown(): Unit = {
     broker.foreach(_.awaitShutdown())
     controller.foreach(_.awaitShutdown())
+    batchBroker.foreach(_.awaitShutdown())
+    batchController.foreach(_.awaitShutdown())
   }
 }
 

@@ -61,10 +61,10 @@ import scala.jdk.CollectionConverters._
 
 
 //case class ControllerMigrationSupport(
-//  zkClient: KafkaZkClient,
-//  migrationDriver: KRaftMigrationDriver,
-//  brokersRpcClient: LegacyPropagator
-//) {
+//                                       zkClient: KafkaZkClient,
+//                                       migrationDriver: KRaftMigrationDriver,
+//                                       brokersRpcClient: LegacyPropagator
+//                                     ) {
 //  def shutdown(logging: Logging): Unit = {
 //    if (zkClient != null) {
 //      CoreUtils.swallow(zkClient.close(), logging)
@@ -79,13 +79,13 @@ import scala.jdk.CollectionConverters._
 //}
 
 /**
- * A Kafka Batch controller that runs in KRaft (Kafka Raft) mode for Thulawa.
+ * A Kafka controller that runs in KRaft (Kafka Raft) mode.
  */
-class ControllerServer(
-  val sharedServer: SharedServer,
-  val configSchema: KafkaConfigSchema,
-  val bootstrapMetadata: BootstrapMetadata
-) extends Logging {
+class BatchControllerServer(
+                             val sharedServer: SharedServer,
+                             val configSchema: KafkaConfigSchema,
+                             val bootstrapMetadata: BootstrapMetadata
+                           ) extends Logging {
 
   import kafka.server.Server._
 
@@ -374,7 +374,7 @@ class ControllerServer(
       // It must be called before DynamicClientQuotaPublisher is installed, since otherwise we may
       // miss the initial update which establishes the dynamic configurations that are in effect on
       // startup.
-      config.dynamicConfig.addReconfigurables(this)
+      //      config.dynamicConfig.addReconfigurables(this)
 
       // Set up the client quotas publisher. This will enable controller mutation quotas and any
       // other quotas which are applicable.
@@ -396,10 +396,10 @@ class ControllerServer(
       // We need a tokenManager for the Publisher
       // The tokenCache in the tokenManager is the same used in DelegationTokenControlManager
       metadataPublishers.add(new DelegationTokenPublisher(
-          config,
-          sharedServer.metadataPublishingFaultHandler,
-          "controller",
-          new DelegationTokenManager(config, tokenCache, time)
+        config,
+        sharedServer.metadataPublishingFaultHandler,
+        "controller",
+        new DelegationTokenManager(config, tokenCache, time)
       ))
 
       // Set up the metrics publisher.

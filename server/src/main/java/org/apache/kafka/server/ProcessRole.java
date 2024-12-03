@@ -19,7 +19,9 @@ package org.apache.kafka.server;
 
 public enum ProcessRole {
     BrokerRole("broker"),
-    ControllerRole("controller");
+    ControllerRole("controller"),
+    BatchBrokerRole("batchBroker"),
+    BatchControllerRole("batchController");
 
     private final String roleName;
 
