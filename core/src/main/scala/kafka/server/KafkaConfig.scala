@@ -332,6 +332,8 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
     val roles = getList(KRaftConfigs.PROCESS_ROLES_CONFIG).asScala.map {
       case "broker" => ProcessRole.BrokerRole
       case "controller" => ProcessRole.ControllerRole
+      case "batchBroker" => ProcessRole.BatchBrokerRole
+      case "batchController" => ProcessRole.BatchControllerRole
       case role => throw new ConfigException(s"Unknown process role '$role'" +
         " (only 'broker' and 'controller' are allowed roles)")
     }
@@ -346,7 +348,8 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
   }
 
   def isKRaftCombinedMode: Boolean = {
-    processRoles == Set(ProcessRole.BrokerRole, ProcessRole.ControllerRole)
+    processRoles == Set(ProcessRole.BrokerRole, ProcessRole.ControllerRole) ||
+      processRoles == Set(ProcessRole.BatchBrokerRole, ProcessRole.BatchControllerRole)
   }
 
   def metadataLogDir: String = {
@@ -928,7 +931,7 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
     def validateAdvertisedBrokerListenersNonEmptyForBroker(): Unit = {
       require(advertisedBrokerListenerNames.nonEmpty,
         "There must be at least one broker advertised listener." + (
-          if (processRoles.contains(ProcessRole.BrokerRole)) s" Perhaps all listeners appear in ${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG}?" else ""))
+          if (processRoles.contains(ProcessRole.BrokerRole) || processRoles.contains(ProcessRole.BatchBrokerRole)) s" Perhaps all listeners appear in ${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG}?" else ""))
     }
     if (processRoles == Set(ProcessRole.BrokerRole)) {
       // KRaft broker-only
@@ -967,7 +970,47 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
       validateControllerQuorumVotersMustContainNodeIdForKRaftController()
       validateAdvertisedControllerListenersNonEmptyForKRaftController()
       validateControllerListenerNamesMustAppearInListenersForKRaftController()
-    } else if (isKRaftCombinedMode) {
+    }
+    else if (processRoles == Set(ProcessRole.BatchBrokerRole)) {
+      // KRaft broker-only
+      validateQuorumVotersAndQuorumBootstrapServerForKRaft()
+      validateControlPlaneListenerEmptyForKRaft()
+      // nodeId must not appear in controller.quorum.voters
+      require(!voterIds.contains(nodeId),
+        s"If ${KRaftConfigs.PROCESS_ROLES_CONFIG} contains just the 'broker' role, the node id $nodeId must not be included in the set of voters ${QuorumConfig.QUORUM_VOTERS_CONFIG}=${voterIds.asScala.toSet}")
+      // controller.listener.names must be non-empty...
+      require(controllerListenerNames.nonEmpty,
+        s"${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG} must contain at least one value when running KRaft with just the broker role")
+      // controller.listener.names are forbidden in listeners...
+      require(controllerListeners.isEmpty,
+        s"${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG} must not contain a value appearing in the '${SocketServerConfigs.LISTENERS_CONFIG}' configuration when running KRaft with just the broker role")
+      // controller.listener.names must all appear in listener.security.protocol.map
+      controllerListenerNames.foreach { name =>
+        val listenerName = ListenerName.normalised(name)
+        if (!effectiveListenerSecurityProtocolMap.contains(listenerName)) {
+          throw new ConfigException(s"Controller listener with name ${listenerName.value} defined in " +
+            s"${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG} not found in ${SocketServerConfigs.LISTENER_SECURITY_PROTOCOL_MAP_CONFIG}  (an explicit security mapping for each controller listener is required if ${SocketServerConfigs.LISTENER_SECURITY_PROTOCOL_MAP_CONFIG} is non-empty, or if there are security protocols other than PLAINTEXT in use)")
+        }
+      }
+      // warn that only the first controller listener is used if there is more than one
+      if (controllerListenerNames.size > 1) {
+        warn(s"${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG} has multiple entries; only the first will be used since ${KRaftConfigs.PROCESS_ROLES_CONFIG}=broker: ${controllerListenerNames.asJava}")
+      }
+    }
+    else if (processRoles == Set(ProcessRole.BatchControllerRole)) {
+      // KRaft controller-only
+      validateQuorumVotersAndQuorumBootstrapServerForKRaft()
+      validateControlPlaneListenerEmptyForKRaft()
+      // listeners should only contain listeners also enumerated in the controller listener
+      require(
+        effectiveAdvertisedControllerListeners.size == listeners.size,
+        s"The ${SocketServerConfigs.LISTENERS_CONFIG} config must only contain KRaft controller listeners from ${KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG} when ${KRaftConfigs.PROCESS_ROLES_CONFIG}=controller"
+      )
+      validateControllerQuorumVotersMustContainNodeIdForKRaftController()
+      validateAdvertisedControllerListenersNonEmptyForKRaftController()
+      validateControllerListenerNamesMustAppearInListenersForKRaftController()
+    }
+    else if (isKRaftCombinedMode) {
       // KRaft combined broker and controller
       validateQuorumVotersAndQuorumBootstrapServerForKRaft()
       validateControlPlaneListenerEmptyForKRaft()
@@ -985,7 +1028,7 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
         if (logDirs.size > 1) {
           require(interBrokerProtocolVersion.isDirectoryAssignmentSupported,
             s"Cannot enable ZooKeeper migration with multiple log directories (aka JBOD) without setting " +
-            s"'${ReplicationConfigs.INTER_BROKER_PROTOCOL_VERSION_CONFIG}' to ${MetadataVersion.IBP_3_7_IV2} or higher")
+              s"'${ReplicationConfigs.INTER_BROKER_PROTOCOL_VERSION_CONFIG}' to ${MetadataVersion.IBP_3_7_IV2} or higher")
         }
       } else {
         // controller listener names must be empty when not in KRaft mode
@@ -995,7 +1038,7 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
     }
 
     val listenerNames = listeners.map(_.listenerName).toSet
-    if (processRoles.isEmpty || processRoles.contains(ProcessRole.BrokerRole)) {
+    if (processRoles.isEmpty || processRoles.contains(ProcessRole.BrokerRole) || processRoles.contains(ProcessRole.BatchBrokerRole)) {
       // validations for all broker setups (i.e. ZooKeeper and KRaft broker-only and KRaft co-located)
       validateAdvertisedBrokerListenersNonEmptyForBroker()
       require(advertisedBrokerListenerNames.contains(interBrokerListenerName),
